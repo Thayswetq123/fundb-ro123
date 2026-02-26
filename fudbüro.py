@@ -165,45 +165,121 @@ with tab1:
         save_to_db(uploaded_file.name, img_bytes, class_name, confidence_score)
         st.success("✅ In Datenbank gespeichert")
 
+    # =================================================
+# PREMIUM TAB 2 – Galerie Dashboard
 # =================================================
-# TAB 2 – Datenbank mit Suche
-# =================================================
+
 with tab2:
 
-    st.subheader("📊 Gespeicherte Vorhersagen")
+    st.subheader("🌌 Premium KI Galerie Dashboard")
 
-    search_term = st.text_input("🔎 Suche (ID, Dateiname, Klasse, Zeitstempel)")
+    # -------------------------
+    # Daten laden
+    # -------------------------
+    conn = sqlite3.connect("predictions.db")
+    c = conn.cursor()
 
-    records = search_predictions(search_term)
+    c.execute("""
+        SELECT id, image, timestamp 
+        FROM predictions 
+        ORDER BY timestamp DESC
+    """)
 
-    if records:
+    records = c.fetchall()
+    conn.close()
 
-        df = pd.DataFrame(records, columns=["ID", "Dateiname", "Klasse", "Confidence", "Zeit"])
-        df["Confidence (%)"] = df["Confidence"].apply(lambda x: round(x * 100, 2))
-        df = df.drop(columns=["Confidence"])
+    if not records:
+        st.info("Noch keine Bilder gespeichert.")
+        st.stop()
 
-        st.dataframe(df, use_container_width=True)
+    # -------------------------
+    # DataFrame für Statistik
+    # -------------------------
+    import pandas as pd
+    from collections import Counter
 
-        # CSV Download
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Als CSV herunterladen",
-            csv,
-            "predictions.csv",
-            "text/csv"
+    df = pd.DataFrame(records, columns=["ID", "Image", "Timestamp"])
+
+    df["Date"] = df["Timestamp"].apply(lambda x: x.split(" ")[0])
+
+    # -------------------------
+    # Sidebar Statistik
+    # -------------------------
+    st.sidebar.header("📊 Statistik")
+
+    date_counts = Counter(df["Date"])
+
+    if date_counts:
+        stat_df = pd.DataFrame(
+            list(date_counts.items()),
+            columns=["Datum", "Anzahl Bilder"]
         )
 
-        # Detailanzeige
-        selected_id = st.selectbox("🔎 Bild anzeigen (ID wählen)", df["ID"])
+        st.sidebar.bar_chart(
+            stat_df.set_index("Datum")
+        )
 
-        if selected_id:
-            img_data = get_image_by_id(selected_id)
-            if img_data:
-                st.image(img_data, caption=f"Bild ID {selected_id}")
+    # -------------------------
+    # Suche
+    # -------------------------
+    search_term = st.text_input("🔎 Suche nach Datum (YYYY-MM-DD) oder ID")
 
-        # Löschen
-        if st.button("🗑 Ausgewählten Eintrag löschen"):
-            delete_record(selected_id)
-            st.success("Eintrag gelöscht – bitte Seite neu laden.")
-    else:
-        st.info("Keine Einträge gefunden.")
+    if search_term:
+        df = df[
+            df["Date"].str.contains(search_term) |
+            df["ID"].astype(str).str.contains(search_term)
+        ]
+
+    # -------------------------
+    # Pagination
+    # -------------------------
+    items_per_page = 12
+
+    total_pages = max(1, len(df) // items_per_page + 1)
+
+    page = st.number_input(
+        "📄 Seite auswählen",
+        min_value=1,
+        max_value=total_pages,
+        value=1
+    )
+
+    start_idx = (page - 1) * items_per_page
+    end_idx = start_idx + items_per_page
+
+    df_page = df.iloc[start_idx:end_idx]
+
+    # -------------------------
+    # Galerie Anzeige
+    # -------------------------
+    st.markdown("### 🖼 Galerie")
+
+    cols = st.columns(4)
+
+    for i, (_, row) in enumerate(df_page.iterrows()):
+
+        with cols[i % 4]:
+
+            st.image(row["Image"], use_container_width=True)
+
+            st.caption(f"🆔 ID: {row['ID']}")
+            st.caption(f"📅 {row['Timestamp']}")
+
+            # Zoom Button
+            if st.button(f"🔍 Bild {row['ID']}", key=f"zoom_{row['ID']}"):
+
+                st.session_state["zoom_image"] = row["Image"]
+                st.session_state["zoom_id"] = row["ID"]
+
+    # -------------------------
+    # Zoom View
+    # -------------------------
+    if "zoom_image" in st.session_state:
+
+        st.markdown("---")
+        st.subheader(f"🔍 Zoom Ansicht – ID {st.session_state['zoom_id']}")
+
+        st.image(
+            st.session_state["zoom_image"],
+            use_container_width=True
+        )
