@@ -6,21 +6,37 @@ import sqlite3
 import datetime
 import io
 import pandas as pd
+import collections
 
-# -------------------------------------------------
-# Seitenkonfiguration
-# -------------------------------------------------
-st.set_page_config(page_title="KI Bildklassifikation", layout="wide")
-st.title("🧠 KI Bildklassifikation mit Datenbank & Suche")
+# ================================
+# PAGE CONFIG (Dark Mode Style)
+# ================================
+st.set_page_config(
+    page_title="Ultra KI Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# -------------------------------------------------
-# Datenbank initialisieren
-# -------------------------------------------------
+st.markdown("""
+<style>
+body {
+    background-color: #0e1117;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🧠 ULTRA PRO KI Bild Dashboard")
+
+# ================================
+# DATABASE
+# ================================
+
 def init_db():
     conn = sqlite3.connect("predictions.db")
     c = conn.cursor()
+
     c.execute("""
-        CREATE TABLE IF NOT EXISTS predictions (
+        CREATE TABLE IF NOT EXISTS predictions(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT,
             image BLOB,
@@ -29,257 +45,227 @@ def init_db():
             timestamp TEXT
         )
     """)
+
     conn.commit()
     conn.close()
 
 init_db()
 
-# -------------------------------------------------
-# Daten speichern
-# -------------------------------------------------
-def save_to_db(filename, image_bytes, predicted_class, confidence):
+# ================================
+# DATABASE FUNCTIONS
+# ================================
+
+def save_to_db(filename, img_bytes, predicted_class, confidence):
+
     conn = sqlite3.connect("predictions.db")
     c = conn.cursor()
+
     c.execute("""
-        INSERT INTO predictions 
-        (filename, image, predicted_class, confidence, timestamp)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO predictions
+        (filename,image,predicted_class,confidence,timestamp)
+        VALUES (?,?,?,?,?)
     """, (
         filename,
-        image_bytes,
+        img_bytes,
         predicted_class,
         confidence,
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ))
+
     conn.commit()
     conn.close()
 
-# -------------------------------------------------
-# Suchfunktion
-# -------------------------------------------------
-def search_predictions(search_term=""):
+def load_predictions(search=""):
     conn = sqlite3.connect("predictions.db")
-    c = conn.cursor()
-
-    if search_term:
-        query = """
-            SELECT id, filename, predicted_class, confidence, timestamp 
-            FROM predictions
-            WHERE 
-                id LIKE ? OR
-                filename LIKE ? OR
-                predicted_class LIKE ? OR
-                timestamp LIKE ?
-            ORDER BY id DESC
-        """
-        like_term = f"%{search_term}%"
-        c.execute(query, (like_term, like_term, like_term, like_term))
-    else:
-        c.execute("""
-            SELECT id, filename, predicted_class, confidence, timestamp 
-            FROM predictions
-            ORDER BY id DESC
-        """)
-
-    rows = c.fetchall()
-    conn.close()
-    return rows
-
-# -------------------------------------------------
-# Einzelnes Bild abrufen
-# -------------------------------------------------
-def get_image_by_id(record_id):
-    conn = sqlite3.connect("predictions.db")
-    c = conn.cursor()
-    c.execute("SELECT image FROM predictions WHERE id=?", (record_id,))
-    img = c.fetchone()
-    conn.close()
-    return img[0] if img else None
-
-# -------------------------------------------------
-# Löschen
-# -------------------------------------------------
-def delete_record(record_id):
-    conn = sqlite3.connect("predictions.db")
-    c = conn.cursor()
-    c.execute("DELETE FROM predictions WHERE id=?", (record_id,))
-    conn.commit()
+    df = pd.read_sql_query("SELECT * FROM predictions ORDER BY timestamp DESC", conn)
     conn.close()
 
-# -------------------------------------------------
-# Modell laden
-# -------------------------------------------------
+    df["date"] = df["timestamp"].apply(lambda x: x.split(" ")[0])
+
+    if search:
+        df = df[
+            df["filename"].str.contains(search, case=False, na=False) |
+            df["predicted_class"].str.contains(search, case=False, na=False) |
+            df["date"].str.contains(search)
+        ]
+
+    return df
+
+# ================================
+# MODEL LOAD
+# ================================
+
 @st.cache_resource
-def load_keras_model():
+def load_model_cached():
     return load_model("keras_model.h5", compile=False)
 
-model = load_keras_model()
+model = load_model_cached()
 
-with open("labels.txt", "r") as f:
-    class_names = [line.strip() for line in f.readlines()]
+with open("labels.txt") as f:
+    labels = [x.strip() for x in f.readlines()]
 
-# -------------------------------------------------
-# Tabs
-# -------------------------------------------------
-tab1, tab2 = st.tabs(["🔍 Bild erkennen", "🗄 Datenbank anzeigen"])
+# ================================
+# SIDEBAR ANALYTICS
+# ================================
 
-# =================================================
-# TAB 1 – Bildklassifikation
-# =================================================
+st.sidebar.header("📊 Analytics Dashboard")
+
+# ================================
+# TABS
+# ================================
+
+tab1, tab2, tab3 = st.tabs([
+    "🔍 KI Prediction",
+    "🖼 Galerie Ultra Pro",
+    "📷 Webcam AI"
+])
+
+# ======================================
+# TAB 1 – Prediction
+# ======================================
+
 with tab1:
 
-    uploaded_file = st.file_uploader("📤 Lade ein Bild hoch...", type=["jpg", "jpeg", "png"])
+    uploaded_file = st.file_uploader(
+        "📤 Bild hochladen",
+        type=["png","jpg","jpeg"]
+    )
 
-    if uploaded_file is not None:
+    if uploaded_file:
 
         image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="Hochgeladenes Bild", use_container_width=True)
+        st.image(image, use_container_width=True)
 
-        # Bild vorbereiten
-        size = (224, 224)
-        image_resized = ImageOps.fit(image, size, Image.Resampling.LANCZOS)
+        size = (224,224)
+        img_resized = ImageOps.fit(image,size)
 
-        image_array = np.asarray(image_resized)
-        normalized_image_array = (image_array.astype(np.float32) / 127.5) - 1
+        arr = np.asarray(img_resized)
+        arr = (arr.astype(np.float32)/127.5)-1
 
-        data = np.ndarray(shape=(1, 224, 224, 3), dtype=np.float32)
-        data[0] = normalized_image_array
+        data = np.expand_dims(arr,0)
 
-        # Vorhersage
-        prediction = model.predict(data)
+        prediction = model.predict(data, verbose=0)
+
         index = np.argmax(prediction)
+        class_name = labels[index]
+        confidence = float(prediction[0][index])
 
-        class_name = class_names[index]
-        confidence_score = float(prediction[0][index])
+        st.success(f"🎯 Klasse: {class_name}")
+        st.info(f"🔥 Confidence: {round(confidence*100,2)}%")
 
-        # Ergebnis anzeigen
-        st.subheader("🔍 Ergebnis")
-        st.success(f"**Klasse:** {class_name}")
-        st.info(f"**Confidence:** {round(confidence_score * 100, 2)} %")
-
-        # Bild als Bytes speichern
+        # Save DB
         img_bytes = io.BytesIO()
         image.save(img_bytes, format="PNG")
-        img_bytes = img_bytes.getvalue()
 
-        save_to_db(uploaded_file.name, img_bytes, class_name, confidence_score)
+        save_to_db(
+            uploaded_file.name,
+            img_bytes.getvalue(),
+            class_name,
+            confidence
+        )
+
         st.success("✅ In Datenbank gespeichert")
 
-    # =================================================
-# PREMIUM TAB 2 – Galerie Dashboard
-# =================================================
+# ======================================
+# TAB 2 – ULTRA PRO GALLERY
+# ======================================
 
 with tab2:
 
-    st.subheader("🌌 Premium KI Galerie Dashboard")
+    st.subheader("🌌 Ultra Galerie Dashboard")
 
-    # -------------------------
-    # Daten laden
-    # -------------------------
-    conn = sqlite3.connect("predictions.db")
-    c = conn.cursor()
+    search = st.text_input("🔎 Suche")
 
-    c.execute("""
-        SELECT id, image, timestamp 
-        FROM predictions 
-        ORDER BY timestamp DESC
-    """)
+    df = load_predictions(search)
 
-    records = c.fetchall()
-    conn.close()
-
-    if not records:
-        st.info("Noch keine Bilder gespeichert.")
-        st.stop()
-
-    # -------------------------
-    # DataFrame für Statistik
-    # -------------------------
-    import pandas as pd
-    from collections import Counter
-
-    df = pd.DataFrame(records, columns=["ID", "Image", "Timestamp"])
-
-    df["Date"] = df["Timestamp"].apply(lambda x: x.split(" ")[0])
-
-    # -------------------------
     # Sidebar Statistik
-    # -------------------------
-    st.sidebar.header("📊 Statistik")
+    if len(df)>0:
 
-    date_counts = Counter(df["Date"])
+        st.sidebar.subheader("📈 Bilder pro Tag")
 
-    if date_counts:
+        counter = collections.Counter(df["date"])
+
         stat_df = pd.DataFrame(
-            list(date_counts.items()),
-            columns=["Datum", "Anzahl Bilder"]
+            list(counter.items()),
+            columns=["Datum","Anzahl"]
         )
 
-        st.sidebar.bar_chart(
+        st.sidebar.line_chart(
             stat_df.set_index("Datum")
         )
 
-    # -------------------------
-    # Suche
-    # -------------------------
-    search_term = st.text_input("🔎 Suche nach Datum (YYYY-MM-DD) oder ID")
-
-    if search_term:
-        df = df[
-            df["Date"].str.contains(search_term) |
-            df["ID"].astype(str).str.contains(search_term)
-        ]
-
-    # -------------------------
     # Pagination
-    # -------------------------
-    items_per_page = 12
+    per_page = 12
 
-    total_pages = max(1, len(df) // items_per_page + 1)
+    pages = max(1, len(df)//per_page + 1)
 
     page = st.number_input(
-        "📄 Seite auswählen",
+        "📄 Seite",
         min_value=1,
-        max_value=total_pages,
+        max_value=pages,
         value=1
     )
 
-    start_idx = (page - 1) * items_per_page
-    end_idx = start_idx + items_per_page
+    start = (page-1)*per_page
+    end = start+per_page
 
-    df_page = df.iloc[start_idx:end_idx]
+    df_page = df.iloc[start:end]
 
-    # -------------------------
-    # Galerie Anzeige
-    # -------------------------
-    st.markdown("### 🖼 Galerie")
-
+    # Gallery
     cols = st.columns(4)
 
-    for i, (_, row) in enumerate(df_page.iterrows()):
+    for i, row in df_page.iterrows():
 
-        with cols[i % 4]:
+        with cols[i%4]:
 
-            st.image(row["Image"], use_container_width=True)
+            st.image(row["image"], use_container_width=True)
 
-            st.caption(f"🆔 ID: {row['ID']}")
-            st.caption(f"📅 {row['Timestamp']}")
+            st.caption(f"🆔 {row['id']}")
+            st.caption(f"📅 {row['timestamp']}")
 
-            # Zoom Button
-            if st.button(f"🔍 Bild {row['ID']}", key=f"zoom_{row['ID']}"):
+            if st.button(f"🔍 Zoom {row['id']}", key=f"z{row['id']}"):
 
-                st.session_state["zoom_image"] = row["Image"]
-                st.session_state["zoom_id"] = row["ID"]
+                st.session_state["zoom"] = row["image"]
+                st.session_state["zoom_id"] = row["id"]
 
-    # -------------------------
-    # Zoom View
-    # -------------------------
-    if "zoom_image" in st.session_state:
+    # Zoom Popup Simulation
+    if "zoom" in st.session_state:
 
         st.markdown("---")
-        st.subheader(f"🔍 Zoom Ansicht – ID {st.session_state['zoom_id']}")
+        st.subheader(f"🔍 Zoom View ID {st.session_state['zoom_id']}")
 
         st.image(
-            st.session_state["zoom_image"],
+            st.session_state["zoom"],
             use_container_width=True
         )
+
+# ======================================
+# TAB 3 – Webcam AI
+# ======================================
+
+with tab3:
+
+    st.subheader("📷 Live Webcam KI Prediction")
+
+    cam = st.camera_input("Take picture")
+
+    if cam:
+
+        image = Image.open(cam).convert("RGB")
+
+        st.image(image, use_container_width=True)
+
+        size=(224,224)
+        img = ImageOps.fit(image,size)
+
+        arr = np.asarray(img)
+        arr = (arr.astype(np.float32)/127.5)-1
+
+        data=np.expand_dims(arr,0)
+
+        pred=model.predict(data,verbose=0)
+
+        index=np.argmax(pred)
+
+        st.success(labels[index])
+        st.info(f"{round(float(pred[0][index])*100,2)}%")
